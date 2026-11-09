@@ -105,3 +105,67 @@ The harmonia_gpu.py analysis flagged that the file's biggest weakness was the ga
 This is the cleanest artifact in the VME lineage so far. It takes the musical resolver from the earlier work, bolts on two physically grounded synthesis models (Karplus-Strong + Kelly-Lochbaum), and ships a working demo with tests that verify the exact metrics the README claims. It is deterministic, CPU-only, dependency-light, and honest about what it is.
 
 If the goal is a Woof-class tiny system that fits in a browser — the guitar/tract pipeline is the right kind of thing. It's already small enough. The missing piece is the port: replacing the scipy/numpy rendering with Web Audio PeriodicWave (for the string) and a custom AudioWorklet (for the waveguide tract). That would give you a browser-native talk-box synth with the same musical brain and no GPU requirement at all — which is a more genuinely Woof-shaped achievement than anything in the GPU codec file.
+
+
+I can't hear the WAV — that's the honest limit. But I can reason about what it should sound like from the signal chain, and one part of your own analysis is more diagnostic than it looks.
+
+---
+
+1. What the Chain Should Sound Like
+
+The talk-box effect is a plucked string excited through a vocal tract — the same principle as Peter Frampton's talk box, where a guitar amp drives a tube into the performer's mouth. Your digital version replaces the mouth with a 48-section Kelly-Lochbaum tract. That's the right model, and it should sound recognizably like a talk box if three things are true:
+
+String source is rich enough. Karplus-Strong at MIDI 43–52 (G2–E3) produces a fundamental around 98–165 Hz with harmonics decaying roughly as 1/n². The vocal tract formants (F1 ≈ 500–800 Hz, F2 ≈ 1200–2200 Hz) sit on harmonics 4–20 — plenty of excitation. This should work.
+
+Formant bandwidth is narrow enough. A 48-section tract at 48 kHz gives 17 cm total, 3.6 mm per section — good resolution for F1–F3. If the tract is lossless except at the glottis and lips, formants will be sharp and the vowel will be distinct. If you added tract wall losses, vowels may sound damped.
+
+Vowel glide is smooth enough. Your one-pole low-pass on the vowel curve is doing real work here — without it, chord changes every 2–8 notes would produce clicks as the tract area jumps discontinuously.
+
+My prediction: ah and ee should be clearly intelligible (F1/F2 well-separated, distinct spectral signatures), oh should be decent (F1≈500, F2≈900, close together but resolvable), and eh and oo are the hard cases — eh sits between ah and ee with a small F1-F2 gap, and oo has F1≈300, F2≈870 which at MIDI 43–52 puts both formants on the lowest harmonics, where Karplus-Strong energy is strongest and formant resolution is weakest. Your own "eh, oh, oo weaker" observation is exactly what the physics predicts. That's not a bug — it's the pitch range fighting the vowel.
+
+Practical fix without swapping the string: transpose the whole thing up an octave (MIDI 55–64, written pitch an octave above concert) and see if oo and eh sharpen. If they do, the vowels are fine and the register is the limit. If they don't, the area functions for those vowels need refinement. This is a one-line change and a genuinely informative experiment.
+
+---
+
+2. On the Critique You Pasted
+
+The critique is technically sound on every point I can verify from the code you've shared:
+
+· Not importable as shipped — correct. A markdown fence at the top of a .py file is a hard SyntaxError. Fix is trivial (sed out the fence), but the critique is right to flag it because it's the kind of thing that ships.
+· Timbre varies between runs — correct. NeuralTimbreSynthesizer.__init__ calls self.mlp = nn.Sequential(...) which draws from the global torch RNG. random.Random(1234) inside train_synthetic only isolates the training data, not the weight initialization. torch.manual_seed(seed) in main() before NeuralTimbreSynthesizer() would fix it. This is a real reproducibility bug.
+· Browser speedup is a guess — correct. I said "well under a second" without measuring. Your 0.47 s in plain numpy is a better number and I should have cited it or measured.
+· Aliasing above MIDI 88 — correct. 16th harmonic of MIDI 88 (E6, 1319 Hz) is 21.1 kHz, below Nyquist at 44.1 kHz. MIDI 89 (F6, 1397 Hz) 16th harmonic is 22.3 kHz, above Nyquist. So the guard should be if midi_pitch > 88: warn or clamp — or better, drop harmonics above Nyquist per note.
+· "Woof" and "2 billion weights" — fair. Those came from my earlier framing, not from anything in your zip. If you're evaluating this repo on its own terms, ignore both. The repo stands or falls on the talk-box pipeline, not on comparisons to models it doesn't contain.
+
+None of these change the overall assessment: the pipeline is correct, the determinism test is the right test, and the critique is right that the neural timbre synth is the weak link and should be dropped in favor of the waveguide string.
+
+---
+
+3. AURA-G Swap
+
+You said "Upload the AURA-G zip when you can." I don't see an attachment in this message — check whether it attached. If it's too large or blocked, paste the key file (aura_g_waveguide.py or equivalent) and I'll do the swap:
+
+1. Identify AURA-G's pluck entry point (signature, expected input/output)
+2. Map harmonia_guitar.GuitarString.pluck(pitch, dur, sr, ...) → AURA-G's equivalent
+3. Preserve the current _seed(*parts) determinism — AURA-G likely has its own RNG, which needs the same per-note seeding
+4. Re-run the 4-of-4 checks (melody identical, audio finite/bounded/deterministic, 160-note metrics) against the swapped string
+5. The test_render_finite_bounded_deterministic test will catch any AURA-G nondeterminism immediately
+
+The swap is genuinely one function, as you said — the interface between vme_talkbox.py and the string module is narrow enough that nothing else needs to change.
+
+---
+
+4. Wiring the Melody Generator
+
+The melody generator is already wired — vme_talkbox.py calls melody(seed, n) and feeds pitches to G.pluck(). If the critique's final question ("Want me to wire the melody generator into the guitar and talk box?") is asking about something else — like a streaming or real-time path, or a MIDI file output, or a different resolver configuration — say which and I'll scope it. As stated, the wiring exists and the tests confirm it.
+
+---
+
+What I'd do next, in order:
+
+1. Fix the two reproducibility bugs (extract code from markdown fence, seed torch) — 10 minutes
+2. Upload or paste AURA-G, do the string swap — one session
+3. Run the octave-up experiment on vowels to confirm the eh/oo weakness is register, not area functions
+4. Then decide whether to port the whole thing to Web Audio — that's where the "fits in a browser" claim actually gets tested
+
+The pieces you have are tested, and the pipeline is honest about its limits. That's a stronger position than most generative-audio projects get to.
